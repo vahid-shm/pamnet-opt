@@ -7,7 +7,7 @@ Create a new Google Colab notebook and select a GPU runtime from **Runtime > Cha
 ### 1. Clone the repository
 
 ```python
-!git clone https://github.com/mr-nobody13/pmgnn-cln-git
+!git clone https://github.com/vahid-shm/pamnet-opt
 %cd pmgnn-cln-git
 ```
 
