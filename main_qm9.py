@@ -1,95 +1,7 @@
 # -*- coding: utf-8 -*-
-"""
-main_qm9.py
-
-اسکریپت اصلی آموزش و ارزیابی PAMNet روی دیتاست QM9.
-
-این فایل کارهای زیر را انجام می‌دهد:
-1. آرگومان‌های خط فرمان را می‌خواند.
-2. دیتاست QM9 را بارگذاری و به train/validation/test تقسیم می‌کند.
-3. یکی از مدل‌های PAMNet یا PAMNet_s را با یکی از چهار حالت معماری می‌سازد:
-   - original: معماری اصلی بدون weight sharing و بدون basis reduction
-   - ws: فقط weight sharing
-   - br: فقط کاهش تعداد basis functions
-   - wsbr: هر دو تغییر weight sharing و basis reduction
-4. مدل را آموزش می‌دهد.
-5. بهترین مدل را براساس کمترین خطای validation ذخیره می‌کند.
-6. خروجی‌های آزمایش را در فایل‌های CSV و JSON ذخیره می‌کند.
-
-نکته‌ی مهم برای مقایسه با کد اولیه:
-در نسخه‌ی اولیه، subset دیتاست ثابت 5000 نمونه بود و تغییرات مدل داخل کد hard-code شده بود.
-در این نسخه، همان ایده‌ها به شکل آرگومان خط فرمان قابل کنترل شده‌اند تا بتوان چند آزمایش را منظم‌تر اجرا و مقایسه کرد.
-"""
-
-# -----------------------------
-# کتابخانه‌های استاندارد پایتون
-# -----------------------------
-import argparse  # خواندن ورودی‌های خط فرمان، مثل --epochs و --variant
-import csv       # ذخیره‌ی نتایج هر epoch و خلاصه‌ی نهایی در CSV
-import json      # ذخیره‌ی تنظیمات اجرا در فایل JSON
-import os        # ساخت پوشه‌ها و کار با مسیرها
-import os.path as osp  # نسخه‌ی کوتاه‌تر os.path برای ساخت مسیر فایل‌ها
-import random    # کنترل seed مربوط به random پایتون
-import time      # اندازه‌گیری زمان آموزش و inference
-from datetime import datetime  # ساخت timestamp برای نام‌گذاری runها
-
-# -----------------------------
-# کتابخانه‌های عددی و deep learning
-# -----------------------------
-import numpy as np
-import torch
-import torch.nn.functional as F
-import torch.optim as optim
-from torch.nn.utils import clip_grad_norm_
-
-# DataLoader جدید PyTorch Geometric؛ نسخه‌ی قدیمی torch_geometric.data.DataLoader deprecated شده است.
-from torch_geometric.loader import DataLoader
-
-# tqdm فقط برای نمایش progress bar هنگام آموزش استفاده می‌شود.
-from tqdm.auto import tqdm
-
-# Scheduler گرم‌کننده‌ی learning rate در ابتدای آموزش.
-from warmup_scheduler import GradualWarmupScheduler
-
-# کلاس دیتاست QM9، مدل‌ها و EMA از فایل‌های پروژه وارد می‌شوند.
-from datasets import QM9
-from models import PAMNet, PAMNet_s, Config
-from utils import EMA
-
-
-# نگاشت شماره‌ی target در QM9 به اسم ویژگی شیمیایی.
-# این دیکشنری فقط برای خواناتر شدن log و خروجی‌ها استفاده می‌شود.
-TARGET_NAMES = {
-    0: "mu",       # Dipole moment
-    1: "alpha",    # Isotropic polarizability
-    2: "HOMO",     # Highest occupied molecular orbital energy
-    3: "LUMO",     # Lowest unoccupied molecular orbital energy
-    4: "gap",      # HOMO-LUMO gap
-    5: "R2",       # Electronic spatial extent
-    6: "ZPVE",     # Zero point vibrational energy
-    7: "U0",       # Internal energy at 0K
-    8: "U",        # Internal energy at 298.15K
-    9: "H",        # Enthalpy at 298.15K
-    10: "G",       # Free energy at 298.15K
-    11: "Cv",      # Heat capacity
-    12: "U0_atom", # Atomization energy corresponding to U0
-    13: "U_atom",  # Atomization energy corresponding to U
-    14: "H_atom",  # Atomization energy corresponding to H
-    15: "G_atom",  # Atomization energy corresponding to G
-    16: "A",       # Rotational constant A
-    17: "B",       # Rotational constant B
-    18: "C",       # Rotational constant C
-}
-
 
 def set_seed(seed: int) -> None:
-    """
-    ثابت کردن seed برای تکرارپذیری آزمایش.
 
-    وقتی seed ثابت باشد، تا حد ممکن split، shuffle و مقداردهی اولیه‌ی مدل در اجراهای مختلف یکسان می‌ماند.
-    deterministic=True باعث می‌شود cuDNN الگوریتم‌های deterministic را ترجیح دهد.
-    benchmark=False مانع انتخاب خودکار سریع‌ترین الگوریتم cuDNN می‌شود چون آن انتخاب ممکن است بین اجراها متفاوت باشد.
-    """
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
     torch.manual_seed(seed)
@@ -99,28 +11,12 @@ def set_seed(seed: int) -> None:
 
 
 def count_parameters(model: torch.nn.Module) -> int:
-    """
-    تعداد پارامترهای قابل‌آموزش مدل را می‌شمارد.
 
-    فقط پارامترهایی حساب می‌شوند که requires_grad=True دارند؛ یعنی optimizer آن‌ها را update می‌کند.
-    این عدد برای مقایسه‌ی معماری original با weight sharing و basis reduction مهم است.
-    """
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
 
 def resolve_qm9_target(cli_target: int, use_atom_mapping: bool = True) -> int:
-    """
-    target واردشده در command line را به ستون واقعی data.y در QM9 تبدیل می‌کند.
 
-    در کد اصلی PAMNet، targetهای 7 تا 10 به ستون‌های 12 تا 15 منتقل می‌شدند.
-    دلیلش این است که برای انرژی‌ها معمولاً atomization energy استفاده می‌شد:
-        7  -> 12 یعنی U0_atom
-        8  -> 13 یعنی U_atom
-        9  -> 14 یعنی H_atom
-        10 -> 15 یعنی G_atom
-
-    اگر --no_atom_mapping داده شود، همین mapping خاموش می‌شود و همان شماره‌ی ورودی استفاده می‌شود.
-    """
     if use_atom_mapping and cli_target in [7, 8, 9, 10]:
         return cli_target + 5
     return cli_target
@@ -128,14 +24,7 @@ def resolve_qm9_target(cli_target: int, use_atom_mapping: bool = True) -> int:
 
 @torch.no_grad()
 def evaluate(model, loader, ema, device):
-    """
-    محاسبه‌ی MAE مدل روی validation یا test.
 
-    - torch.no_grad باعث می‌شود gradient محاسبه نشود؛ پس evaluation سریع‌تر و کم‌مصرف‌تر است.
-    - model.eval مدل را در حالت ارزیابی قرار می‌دهد.
-    - ema.assign وزن‌های EMA را موقتاً روی مدل می‌گذارد.
-    - ema.resume بعد از ارزیابی وزن‌های اصلی آموزش را برمی‌گرداند.
-    """
     mae = 0.0
     model.eval()
 
@@ -161,12 +50,7 @@ def evaluate(model, loader, ema, device):
 
 @torch.no_grad()
 def evaluate_with_time(model, loader, ema, device):
-    """
-    علاوه بر MAE، زمان inference روی test loader را هم اندازه می‌گیرد.
 
-    اگر GPU استفاده شود، قبل و بعد از اندازه‌گیری torch.cuda.synchronize صدا زده می‌شود.
-    چون عملیات CUDA asynchronous هستند و بدون synchronize زمان اندازه‌گیری‌شده دقیق نیست.
-    """
     if device.type == "cuda":
         torch.cuda.synchronize(device)
 
@@ -181,12 +65,7 @@ def evaluate_with_time(model, loader, ema, device):
 
 
 def write_csv_row(path, row):
-    """
-    یک ردیف را به فایل CSV اضافه می‌کند.
 
-    اگر فایل CSV هنوز وجود نداشته باشد، ابتدا header با نام ستون‌ها نوشته می‌شود.
-    از این تابع برای ذخیره‌ی log هر epoch و همچنین summary نهایی استفاده می‌شود.
-    """
     # مطمئن می‌شویم پوشه‌ی خروجی وجود دارد.
     os.makedirs(osp.dirname(path), exist_ok=True)
 
@@ -201,12 +80,7 @@ def write_csv_row(path, row):
 
 
 def main():
-    """
-    نقطه‌ی اصلی اجرای برنامه.
 
-    همه‌ی مراحل experiment از این تابع شروع می‌شود:
-    خواندن آرگومان‌ها، ساخت دیتاست، ساخت مدل، آموزش، evaluation، ذخیره‌ی مدل و ذخیره‌ی نتایج.
-    """
     parser = argparse.ArgumentParser()
 
     # -----------------------------
