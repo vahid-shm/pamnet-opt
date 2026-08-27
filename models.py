@@ -1,36 +1,15 @@
 # -*- coding: utf-8 -*-
-"""
-models.py
 
-تعریف مدل‌های PAMNet و PAMNet_s برای آزمایش‌های QM9.
-
-این نسخه برای مقایسه‌ی چهار حالت معماری آماده شده است:
-1. original: بدون weight sharing و بدون basis reduction
-2. ws: استفاده از weight sharing در لایه‌های local/global
-3. br: کاهش تعداد basis functions برای کم کردن محاسبات و پارامترهای وابسته
-4. wsbr: ترکیب weight sharing و basis reduction
-
-تفاوت اصلی با نسخه‌ی اولیه‌ی hard-code شده این است که اینجا تغییرات معماری از طریق Config کنترل می‌شوند،
-پس برای اجرای حالت‌های مختلف لازم نیست داخل کد دستکاری دستی انجام شود.
-"""
-
-# -----------------------------
-# کتابخانه‌های اصلی
-# -----------------------------
 import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-# SparseTensor برای ساخت adjacency sparse و استخراج indexهای triplet/pair استفاده می‌شود.
 from torch_sparse import SparseTensor
 
-# global_add_pool خروجی node-level را به graph-level تبدیل می‌کند.
-# radius برای ساخت graph سراسری براساس فاصله‌ی سه‌بعدی اتم‌ها استفاده می‌شود.
 from torch_geometric.nn import global_add_pool, radius
 from torch_geometric.utils import remove_self_loops
 
-# لایه‌های اصلی message passing و basis embedding از فایل layers.py پروژه می‌آیند.
 from layers import (
     Global_MessagePassing,
     Local_MessagePassing,
@@ -42,19 +21,7 @@ from layers import (
 
 
 class Config(object):
-    """
-    کلاس نگه‌دارنده‌ی تنظیمات مدل.
 
-    هدف این کلاس این است که همه‌ی hyperparameterهای معماری در یک object جمع شوند و به PAMNet/PAMNet_s داده شوند.
-
-    پارامترهای مهم:
-    - dim: اندازه‌ی hidden representation هر اتم
-    - n_layer: تعداد تکرارهای message passing
-    - cutoff_l: شعاع cutoff برای graph محلی، یعنی graph مبتنی بر bond/edge_index
-    - cutoff_g: شعاع cutoff برای graph سراسری، یعنی اتصال اتم‌های نزدیک در فضای سه‌بعدی
-    - use_weight_sharing: اگر True باشد یک لایه‌ی local/global چند بار تکرار می‌شود
-    - use_basis_reduction: اگر True باشد تعداد RBF/SBF کمتر می‌شود
-    """
 
     def __init__(
         self,
@@ -104,20 +71,10 @@ class Config(object):
 
 
 class PAMNet(nn.Module):
-    """
-    نسخه‌ی کامل PAMNet.
 
-    این مدل هم پیام‌های local و هم پیام‌های global را استفاده می‌کند.
-    local graph از edge_index دیتاست می‌آید و معمولاً اتصال‌های bond را نشان می‌دهد.
-    global graph با radius ساخته می‌شود و اتم‌هایی را که در فاصله‌ی cutoff_g هستند به هم وصل می‌کند.
-    """
 
     def __init__(self, config: Config, envelope_exponent: int = 5):
-        """
-        سازنده‌ی PAMNet.
 
-        envelope_exponent در Bessel/Spherical basis استفاده می‌شود تا اثر فاصله نزدیک cutoff نرم‌تر صفر شود.
-        """
         super(PAMNet, self).__init__()
 
         # ذخیره‌ی تنظیمات اصلی روی object مدل.
@@ -183,26 +140,12 @@ class PAMNet(nn.Module):
         self.init()
 
     def init(self):
-        """
-        مقداردهی اولیه‌ی embedding اتم‌ها.
 
-        مقدارها از توزیع uniform در بازه‌ی [-sqrt(3), sqrt(3)] گرفته می‌شوند.
-        """
         stdv = math.sqrt(3)
         self.embeddings.data.uniform_(-stdv, stdv)
 
     def get_edge_info(self, edge_index, pos):
-        """
-        حذف self-loopها و محاسبه‌ی فاصله‌ی Euclidean برای هر edge.
 
-        ورودی:
-        - edge_index: ماتریس 2×E شامل source و target edgeها
-        - pos: مختصات سه‌بعدی همه‌ی اتم‌ها
-
-        خروجی:
-        - edge_index بدون self-loop
-        - dist: بردار طول E شامل فاصله‌ی هر دو اتم متصل
-        """
         # self-loop یعنی edge از یک node به خودش؛ برای محاسبه‌ی فاصله/پیام اینجا لازم نیست.
         edge_index, _ = remove_self_loops(edge_index)
 
@@ -214,14 +157,7 @@ class PAMNet(nn.Module):
         return edge_index, dist
 
     def indices(self, edge_index, num_nodes):
-        """
-        ساخت indexهای لازم برای محاسبه‌ی زاویه‌ها در graph محلی.
 
-        PAMNet برای پیام‌های محلی فقط فاصله‌ی دو اتم را استفاده نمی‌کند؛ زاویه‌های سه‌اتمی را هم encode می‌کند.
-        برای این کار باید از edge_index ترکیب‌های i-j-k و pairهای مرتبط استخراج شوند.
-
-        خروجی‌ها برای Local_MessagePassing و SphericalBasisLayer استفاده می‌شوند.
-        """
         row, col = edge_index
 
         # value شماره‌ی هر edge است تا بعداً بتوانیم edge متناظر با هر triplet را پیدا کنیم.
@@ -280,15 +216,7 @@ class PAMNet(nn.Module):
         )
 
     def forward(self, data):
-        """
-        forward pass مدل برای یک batch از moleculeهای QM9.
 
-        data باید این attributeها را داشته باشد:
-        - x: نوع اتم‌ها به شکل index
-        - pos: مختصات سه‌بعدی اتم‌ها
-        - edge_index: اتصال‌های local یا bond graph
-        - batch: مشخص می‌کند هر node متعلق به کدام molecule در batch است
-        """
         # دریافت ورودی‌های اصلی از batch.
         x_raw = data.x
         batch = data.batch
@@ -408,12 +336,7 @@ class PAMNet(nn.Module):
 
 
 class PAMNet_s(nn.Module):
-    """
-    نسخه‌ی ساده‌تر PAMNet.
 
-    تفاوت اصلی با PAMNet کامل این است که Local_MessagePassing_s ساده‌تر است و فقط یک نوع spherical basis/angle را استفاده می‌کند.
-    باقی منطق کلی، یعنی global graph، local graph، attention fusion و pooling مشابه است.
-    """
 
     def __init__(self, config: Config, envelope_exponent: int = 5):
         """سازنده‌ی PAMNet_s با همان flagهای معماری Config."""
@@ -471,11 +394,7 @@ class PAMNet_s(nn.Module):
         self.embeddings.data.uniform_(-stdv, stdv)
 
     def indices(self, edge_index, num_nodes):
-        """
-        ساخت indexهای pair برای نسخه‌ی ساده‌ی local message passing.
 
-        در PAMNet_s فقط pairهای لازم برای یک نوع زاویه ساخته می‌شوند، بنابراین خروجی این تابع کمتر از PAMNet کامل است.
-        """
         row, col = edge_index
 
         # شماره‌گذاری edgeها برای استفاده در spherical basis.
@@ -508,9 +427,7 @@ class PAMNet_s(nn.Module):
         return idx_i_pair, idx_j1_pair, idx_j2_pair, idx_jj_pair, idx_ji_pair
 
     def forward(self, data):
-        """
-        forward pass نسخه‌ی PAMNet_s برای یک batch از moleculeها.
-        """
+
         # ورودی‌های graph batch.
         x_raw = data.x
         edge_index_l = data.edge_index
